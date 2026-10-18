@@ -19,31 +19,61 @@ description: 関心事と対象サイトの RSS・API・検索からニュース
 
 対象期間や件数などの指定があれば従う。指定がなければ、実行時点から直近7日間を対象に、関連性と重要性の高いニュースを最大5件選ぶ。検索前に現在日時とタイムゾーンを確認し、対象期間を具体的な日付で示す。
 
+YouTube は当面、収集対象から除外する。`TARGET.md` に指定されていても、動画・字幕・説明欄の取得や YouTube を対象とする検索は行わず、レポートの収集条件に一時除外したことを記載する。
+
 ## 収集と選定
+
+### 収集パイプライン
+
+候補の発見・本文取得・証跡保存は、先にスクリプトで完了する。手作業で一部の候補だけを
+読む前に、リポジトリルートから次を実行する。`YYYY-MM-DD` は Asia/Tokyo の収集日である。
+
+```bash
+python3 .agents/skills/curation/scripts/collect.py \
+  --target curation/TARGET.md \
+  --output curation/cache/YYYY-MM-DD-collected.json
+```
+
+スクリプトは対象サイトごとの公開入口から候補と利用可能な本文を取得し、取得内容・取得元 URL・
+日時・エラーを単一の JSON に保存する。日次サマリの選定入力はこの JSON の全候補と本文であり、
+先に目視した候補だけで選ばない。保存に失敗した場合は、JSON を再利用できる状態になるまで
+サマリを作成しない。
+
+サイト固有の入口と制約は必要なものだけ参照する。
+
+| 対象 | 参照 |
+| --- | --- |
+| Zenn | [references/zenn.md](references/zenn.md) |
+| DEV | [references/dev.md](references/dev.md) |
+| Hacker News | [references/hacker-news.md](references/hacker-news.md) |
+| note | [references/note.md](references/note.md) |
+| Medium | [references/medium.md](references/medium.md) |
+| GitHub | [references/github.md](references/github.md) |
+
+note と Medium のように、`TARGET.md` が対象 RSS を示さないサイトは、スクリプトが
+`fallback_required` を記録する。その後の Web 検索・ブラウザーによる候補を次の JSON として
+保存し、同じ実行に取り込む。RSS URL や非公開 API を推測しない。
+
+```json
+{"candidates":[{"url":"https://example.com/article","title":"題名","source":"note","published_at":"2026-10-18T00:00:00+09:00","discovery":{"url":"検索またはRSSのURL"},"content":{"url":"https://example.com/article","status":"fetched","text":"本文","error":null}}]}
+```
+
+```bash
+python3 .agents/skills/curation/scripts/collect.py \
+  --target curation/TARGET.md \
+  --output curation/cache/YYYY-MM-DD-collected.json \
+  --fallback-json curation/cache/YYYY-MM-DD-fallback.json
+```
+
+`fallback-json` は同一 URL を正規化して統合する。収集スクリプトの再実行は当日の
+`*-collected.json` を上書きしてよいが、候補履歴とレポートは削除しない。
 
 ### 候補を集める
 
-トップページだけで探索を終えず、RSS・公式 API を優先して個別記事の URL、タイトル、公開日時、概要を集める。対象ページは起点として扱い、指定サイト内に限定されていなければ公式発表などの外部資料も確認する。
+RSS・API・fallback のいずれでも、候補 URL、公開日時の根拠、本文取得結果を JSON に残す。
+関心との一致、内容の具体性、新しさを優先して全候補を比較する。本文が `fetched` の候補だけを採用候補とし、`partial` と `unreadable` は本文未確認として扱う。取得障害と該当候補なしを区別して収集状況に記録する。
 
-最大5件のレポートでは、各サイト10〜20件を候補取得の目安にし、本文を読む候補を全体で10件程度に絞る。これは上限までの取得や全サイトからの採用を義務づける件数ではない。関心事との関連性、具体的な発表・実践内容、新しさを優先し、人気指標は補助に使う。
-
-| サイト | 優先する入口と確認事項 |
-| --- | --- |
-| Zenn | トレンド `https://zenn.dev/feed` と `https://zenn.dev/topics/トピック名/feed`。指定著者は `https://zenn.dev/ユーザー名/feed`。 |
-| DEV | 公式 API `https://dev.to/api/articles?tag=タグ名&top=7&per_page=20`。対象期間に合わせて top を調整し、published_at で境界を確認する。複数タグの結果は URL で統合する。 |
-| Hacker News | 公式 API の `https://hacker-news.firebaseio.com/v0/topstories.json`・`newstories.json` と `item/投稿ID.json`。リンク先 URL、投稿日時 time、score を候補情報にする。投稿日時は元記事の公開日ではない。 |
-| note | 指定著者・マガジンの RSS を使う。通常の RSS は冒頭のみなので、採用候補は本文を開く。著者等が未指定なら関心語と site:note.com の検索で候補を補う。 |
-| Medium | 指定著者・Publication・トピックの RSS を使う。未指定なら関心語と site:medium.com の検索で候補を補う。有料部分を読めない記事は確認できた範囲を明記する。 |
-| GitHub | Trending の日次・週次一覧から候補を拾い、README・Release・公式発表で内容と日付を確認する。順位やスター増分を取得できなければ「トレンド」と断定しない。 |
-| YouTube | 関心語の検索、指定チャンネルの動画一覧や利用可能なフィードから候補を拾う。公開日時と説明欄・字幕等で内容を確認し、タイトルだけで要約しない。 |
-
-RSS・API が取得できなければ、同じサイトの関心語・期間を組み合わせた Web 検索へ切り替える。検索結果の抜粋や RSS の概要だけで本文を確認した扱いにしない。取得方法の仕様が不明・変更されている場合は、下記の公式資料を確認する。
-
-- [Zenn の RSS](https://zenn.dev/zenn/articles/zenn-feed-rss)
-- [DEV API](https://developers.forem.com/api/v0)
-- [Hacker News API](https://github.com/HackerNews/API)
-- [note の RSS 配信](https://www.help-note.com/hc/ja/articles/900001001246)
-- [Medium の RSS](https://help.medium.com/hc/en-us/articles/214874118-Using-RSS-feeds-of-profiles-publications-and-topics)
+取得方法・入口・サイト固有の fallback 条件は、各サイトの reference を参照する。Web 検索またはブラウザーで補完した候補も fallback JSON に保存してから比較する。
 
 ### 日付・重複を確認して本文を読む
 
@@ -57,9 +87,13 @@ RSS・API が取得できなければ、同じサイトの関心語・期間を�
 
 ### 候補を蓄積する
 
-実行ごとに `curation/cache/YYYY-MM-DD-candidates.json` に候補を保存し、対象期間に重なる日付の履歴を次回の選定に使う。同日の再実行では URL をキーに統合し、既存候補を保持する。日付は Asia/Tokyo の取得日を使う。
+収集スクリプトが出力する `curation/cache/YYYY-MM-DD-collected.json` を今回の取得証跡とする。
+候補履歴は `curation/cache/YYYY-MM-DD-candidates.json` に保存し、対象期間に重なる日付の履歴を
+次回の選定に使う。同日の再実行では URL をキーに統合し、既存候補を保持する。日付は
+Asia/Tokyo の取得日を使う。`collected.json` の候補本文・source 結果・fallback 取り込み結果を
+履歴の根拠として残す。
 
-JSON のトップレベルは `collected_at`（タイムゾーン付き ISO 8601）、`timezone`、`candidates` とする。各候補に `url`、`title`、`source`、`discovered_at`、`published_at`、`updated_at`、`shared_at`、`event_date`、`summary`、`category`、`status`、`reason`、`selected_report_dates` を記録する。日付不明は null、未採用の日付リストは空配列とし、status は pending / selected / rejected / unreadable、category は news / article / null とする。保存完了を確認したレポートだけ selected_report_dates に反映する。
+JSON のトップレベルは `collected_at`（タイムゾーン付き ISO 8601）、`timezone`、`sources`、`candidates` とする。各候補に `url`、`title`、`source`、`discovered_at`、`published_at`、`updated_at`、`shared_at`、`event_date`、`summary`、`category`、`status`、`reason`、`selected_report_dates`、`discovery`、`metrics`、`content` を記録する。`discovery.url` は候補を発見した RSS/API/検索の証跡、`content` は本文の URL・取得状態・テキスト・エラーである。source ごとの成功・失敗は `sources` にも記録する。日付不明は null、未採用の日付リストは空配列とし、status は pending / selected / rejected / unreadable、category は news / article / null とする。保存完了を確認したレポートだけ selected_report_dates に反映する。
 
 履歴がない初回は、RSS の現在の掲載分と期間を指定した Web 検索で補う。現在のフィードだけで直近7日を網羅したとは判断しない。履歴の削除はこのスキルでは行わない。履歴保存ができなくても収集を続け、その実行では蓄積できなかったことを報告する。
 
